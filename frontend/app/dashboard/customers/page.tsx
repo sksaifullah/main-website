@@ -194,7 +194,7 @@ export default function CustomersPage() {
   };
 
   const handleImportJSON = async (jsonArray: Record<string, unknown>[]) => {
-    const count = importCustomersFromJSON(jsonArray);
+    const count = await importCustomersFromJSON(jsonArray);
     if (count > 0) {
       showToast(`Imported ${count} customer record(s) successfully.`);
       await loadData();

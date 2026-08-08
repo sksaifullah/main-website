@@ -107,10 +107,14 @@ def verify_password(plain_password: str, stored_hash: str) -> bool:
         return False
     return hash_password(plain_password) == stored_hash
 
+_admin_username = os.getenv("ADMIN_DEFAULT_USERNAME", "Admin")
+_admin_email = os.getenv("ADMIN_DEFAULT_EMAIL", "admin@skyworldwide.com")
+_admin_password = os.getenv("ADMIN_DEFAULT_PASSWORD", "sky@123")
+
 DEFAULT_ADMIN = {
-    "username": "Admin",
-    "email": "admin@skyworldwide.com",
-    "password_hash": hash_password("sky@123")
+    "username": _admin_username,
+    "email": _admin_email,
+    "password_hash": hash_password(_admin_password)
 }
 
 DEFAULT_SETTINGS = {
@@ -378,9 +382,12 @@ def save_db_and_verify(data: Dict[str, Any], verification_fn=None) -> tuple[bool
 
 app = FastAPI(title="Sky Worldwide International API")
 
+_cors_origins_raw = os.getenv("CORS_ALLOWED_ORIGINS", "*")
+_cors_origins = [o.strip() for o in _cors_origins_raw.split(",")] if _cors_origins_raw != "*" else ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -2658,7 +2665,494 @@ _auto_sync_thread = threading.Thread(target=_auto_sync_background_worker, daemon
 _auto_sync_thread.start()
 
 
+# ==============================================================================
+# ADMIN CUSTOMERS MANAGEMENT ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/admin/customers")
+def get_customers():
+    db = load_db()
+    customers = db.get("customers", [])
+    return {"success": True, "data": {"customers": customers, "total": len(customers)}}
+
+@app.post("/api/admin/customers")
+def create_customer(payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    customers = db.get("customers", [])
+    cust_id = f"cust-{uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now().isoformat()
+    customer = {
+        "id": cust_id,
+        "name": (payload.get("name") or "").strip(),
+        "company": (payload.get("company") or "").strip(),
+        "email": (payload.get("email") or "").strip().lower(),
+        "phone": (payload.get("phone") or "").strip(),
+        "address": (payload.get("address") or "").strip(),
+        "country": (payload.get("country") or "India").strip(),
+        "total_shipments": int(payload.get("total_shipments") or 0),
+        "last_shipment": payload.get("last_shipment") or "N/A",
+        "status": payload.get("status") or "Active",
+        "created_date": now_iso[:10],
+    }
+    if not customer["name"]:
+        raise HTTPException(status_code=400, detail="Customer name is required.")
+    customers.append(customer)
+    db["customers"] = customers
+    ok, err = save_db_and_verify(db, lambda r: any(c.get("id") == cust_id for c in r.get("customers", [])))
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Database write failed: {err}")
+    return JSONResponse(status_code=201, content={"success": True, "message": "Customer created.", "data": customer})
+
+@app.put("/api/admin/customers/{cust_id}")
+def update_customer(cust_id: str, payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    customers = db.get("customers", [])
+    idx = next((i for i, c in enumerate(customers) if c.get("id") == cust_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail=f"Customer {cust_id} not found.")
+    for field in ["name", "company", "email", "phone", "address", "country", "status", "total_shipments", "last_shipment"]:
+        if field in payload:
+            customers[idx][field] = payload[field]
+    db["customers"] = customers
+    ok, err = save_db_and_verify(db, lambda r: any(c.get("id") == cust_id for c in r.get("customers", [])))
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Database write failed: {err}")
+    return {"success": True, "message": "Customer updated.", "data": customers[idx]}
+
+@app.delete("/api/admin/customers/{cust_id}")
+def delete_customer(cust_id: str):
+    db = load_db()
+    customers = db.get("customers", [])
+    db["customers"] = [c for c in customers if c.get("id") != cust_id]
+    ok, err = save_db_and_verify(db, lambda r: all(c.get("id") != cust_id for c in r.get("customers", [])))
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Database write failed: {err}")
+    return {"success": True, "message": f"Customer {cust_id} deleted."}
+
+@app.post("/api/admin/customers/bulk-delete")
+def bulk_delete_customers(payload: Dict[str, Any] = Body(...)):
+    ids = payload.get("ids", [])
+    id_set = set(ids)
+    db = load_db()
+    customers = db.get("customers", [])
+    db["customers"] = [c for c in customers if c.get("id") not in id_set]
+    deleted = len(customers) - len(db["customers"])
+    save_db(db)
+    return {"success": True, "message": f"Deleted {deleted} customer(s).", "deleted_count": deleted}
+
+
+# ==============================================================================
+# ADMIN COUNTRIES MANAGEMENT ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/admin/countries")
+def get_countries():
+    db = load_db()
+    countries = db.get("countries", [])
+    return {"success": True, "data": countries}
+
+@app.post("/api/admin/countries")
+def create_country(payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    countries = db.get("countries", [])
+    country_id = f"ctry-{uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now().isoformat()
+    country = {
+        "id": country_id,
+        "name": (payload.get("name") or "").strip(),
+        "code": (payload.get("code") or "").strip().upper(),
+        "flag": payload.get("flag") or "",
+        "image": payload.get("image") or "",
+        "currency": (payload.get("currency") or "USD").strip(),
+        "timezone": (payload.get("timezone") or "UTC").strip(),
+        "major_cities": (payload.get("major_cities") or "").strip(),
+        "transit_days": payload.get("transit_days") or "3-5 Business Days",
+        "is_enabled": bool(payload.get("is_enabled", True)),
+        "customs_threshold": payload.get("customs_threshold") or "",
+        "notes": (payload.get("notes") or "").strip(),
+        "created_at": now_iso,
+    }
+    if not country["name"]:
+        raise HTTPException(status_code=400, detail="Country name is required.")
+    countries.append(country)
+    db["countries"] = countries
+    ok, err = save_db_and_verify(db, lambda r: any(c.get("id") == country_id for c in r.get("countries", [])))
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Database write failed: {err}")
+    return JSONResponse(status_code=201, content={"success": True, "message": "Country created.", "data": country})
+
+@app.put("/api/admin/countries/{country_id}")
+def update_country(country_id: str, payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    countries = db.get("countries", [])
+    idx = next((i for i, c in enumerate(countries) if c.get("id") == country_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail=f"Country {country_id} not found.")
+    for field in ["name", "code", "flag", "image", "currency", "timezone", "major_cities", "transit_days", "is_enabled", "customs_threshold", "notes"]:
+        if field in payload:
+            countries[idx][field] = payload[field]
+    db["countries"] = countries
+    ok, err = save_db_and_verify(db, lambda r: any(c.get("id") == country_id for c in r.get("countries", [])))
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Database write failed: {err}")
+    return {"success": True, "message": "Country updated.", "data": countries[idx]}
+
+@app.delete("/api/admin/countries/{country_id}")
+def delete_country(country_id: str):
+    db = load_db()
+    countries = db.get("countries", [])
+    db["countries"] = [c for c in countries if c.get("id") != country_id]
+    ok, err = save_db_and_verify(db, lambda r: all(c.get("id") != country_id for c in r.get("countries", [])))
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Database write failed: {err}")
+    return {"success": True, "message": f"Country {country_id} deleted."}
+
+
+# ==============================================================================
+# ADMIN PRICING MANAGEMENT ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/admin/pricing")
+def get_pricing():
+    db = load_db()
+    pricing = db.get("pricing", [])
+    return {"success": True, "data": pricing}
+
+@app.post("/api/admin/pricing")
+def create_pricing(payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    pricing = db.get("pricing", [])
+    price_id = f"price-{uuid.uuid4().hex[:8]}"
+    now_iso = datetime.now().isoformat()
+    record = {
+        "id": price_id,
+        "country": (payload.get("country") or "").strip(),
+        "zone": (payload.get("zone") or "").strip(),
+        "category": (payload.get("category") or "Express Air").strip(),
+        "currency": (payload.get("currency") or "USD").strip(),
+        "base_express_price": float(payload.get("base_express_price") or 0),
+        "weight_slabs": payload.get("weight_slabs") or [],
+        "fuel_surcharge_pct": float(payload.get("fuel_surcharge_pct") or 0),
+        "notes": (payload.get("notes") or "").strip(),
+        "created_at": now_iso,
+    }
+    if not record["country"]:
+        raise HTTPException(status_code=400, detail="Country is required.")
+    pricing.append(record)
+    db["pricing"] = pricing
+    ok, err = save_db_and_verify(db, lambda r: any(p.get("id") == price_id for p in r.get("pricing", [])))
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Database write failed: {err}")
+    return JSONResponse(status_code=201, content={"success": True, "message": "Pricing record created.", "data": record})
+
+@app.put("/api/admin/pricing/{price_id}")
+def update_pricing(price_id: str, payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    pricing = db.get("pricing", [])
+    idx = next((i for i, p in enumerate(pricing) if p.get("id") == price_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail=f"Pricing record {price_id} not found.")
+    for field in ["country", "zone", "category", "currency", "base_express_price", "weight_slabs", "fuel_surcharge_pct", "notes"]:
+        if field in payload:
+            pricing[idx][field] = payload[field]
+    db["pricing"] = pricing
+    ok, err = save_db_and_verify(db, lambda r: any(p.get("id") == price_id for p in r.get("pricing", [])))
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Database write failed: {err}")
+    return {"success": True, "message": "Pricing record updated.", "data": pricing[idx]}
+
+@app.delete("/api/admin/pricing/{price_id}")
+def delete_pricing(price_id: str):
+    db = load_db()
+    pricing = db.get("pricing", [])
+    db["pricing"] = [p for p in pricing if p.get("id") != price_id]
+    ok, err = save_db_and_verify(db, lambda r: all(p.get("id") != price_id for p in r.get("pricing", [])))
+    if not ok:
+        raise HTTPException(status_code=500, detail=f"Database write failed: {err}")
+    return {"success": True, "message": f"Pricing record {price_id} deleted."}
+
+
+# ==============================================================================
+# ADMIN CONTACTS (MESSAGES) MANAGEMENT ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/admin/contacts")
+def get_admin_contacts():
+    db = load_db()
+    contacts = db.get("contacts", [])
+    return {"success": True, "data": contacts, "total": len(contacts)}
+
+@app.put("/api/admin/contacts/{contact_id}")
+def update_contact(contact_id: str, payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    contacts = db.get("contacts", [])
+    idx = next((i for i, c in enumerate(contacts) if c.get("id") == contact_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail=f"Contact {contact_id} not found.")
+    for field in ["status", "reply", "archived"]:
+        if field in payload:
+            contacts[idx][field] = payload[field]
+    contacts[idx]["updated_at"] = datetime.now().isoformat()
+    db["contacts"] = contacts
+    save_db(db)
+    return {"success": True, "message": "Contact updated.", "data": contacts[idx]}
+
+@app.post("/api/admin/contacts/{contact_id}/reply")
+def reply_to_contact(contact_id: str, payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    contacts = db.get("contacts", [])
+    idx = next((i for i, c in enumerate(contacts) if c.get("id") == contact_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail=f"Contact {contact_id} not found.")
+    contacts[idx]["status"] = "Replied"
+    contacts[idx]["reply"] = payload.get("reply", "")
+    contacts[idx]["replied_at"] = datetime.now().isoformat()
+    db["contacts"] = contacts
+    save_db(db)
+    return {"success": True, "message": f"Reply sent to contact {contact_id}."}
+
+@app.delete("/api/admin/contacts/{contact_id}")
+def delete_contact(contact_id: str):
+    db = load_db()
+    contacts = db.get("contacts", [])
+    db["contacts"] = [c for c in contacts if c.get("id") != contact_id]
+    save_db(db)
+    return {"success": True, "message": f"Contact {contact_id} deleted."}
+
+
+# ==============================================================================
+# ADMIN QUOTES MANAGEMENT ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/admin/quotes")
+def get_admin_quotes():
+    db = load_db()
+    quotes = db.get("quotes", [])
+    return {"success": True, "data": quotes, "total": len(quotes)}
+
+@app.put("/api/admin/quotes/{quote_id}")
+def update_quote(quote_id: str, payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    quotes = db.get("quotes", [])
+    idx = next((i for i, q in enumerate(quotes) if q.get("id") == quote_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail=f"Quote {quote_id} not found.")
+    for field in ["status", "reply", "archived"]:
+        if field in payload:
+            quotes[idx][field] = payload[field]
+    quotes[idx]["updated_at"] = datetime.now().isoformat()
+    db["quotes"] = quotes
+    save_db(db)
+    return {"success": True, "message": "Quote updated.", "data": quotes[idx]}
+
+@app.post("/api/admin/quotes/{quote_id}/reply")
+def reply_to_quote(quote_id: str, payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    quotes = db.get("quotes", [])
+    idx = next((i for i, q in enumerate(quotes) if q.get("id") == quote_id), None)
+    if idx is None:
+        raise HTTPException(status_code=404, detail=f"Quote {quote_id} not found.")
+    quotes[idx]["status"] = "Replied"
+    quotes[idx]["reply"] = payload.get("reply", "")
+    quotes[idx]["replied_at"] = datetime.now().isoformat()
+    db["quotes"] = quotes
+    save_db(db)
+    return {"success": True, "message": f"Reply sent to quote {quote_id}."}
+
+@app.delete("/api/admin/quotes/{quote_id}")
+def delete_quote(quote_id: str):
+    db = load_db()
+    quotes = db.get("quotes", [])
+    db["quotes"] = [q for q in quotes if q.get("id") != quote_id]
+    save_db(db)
+    return {"success": True, "message": f"Quote {quote_id} deleted."}
+
+
+# ==============================================================================
+# ADMIN NOTIFICATIONS MANAGEMENT ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/admin/notifications")
+def get_notifications():
+    db = load_db()
+    notifications = db.get("notifications", [])
+    return {"success": True, "data": notifications, "total": len(notifications), "unread": sum(1 for n in notifications if not n.get("read"))}
+
+@app.post("/api/admin/notifications")
+def create_notification(payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    notifications = db.get("notifications", [])
+    notif_id = f"notif-{uuid.uuid4().hex[:8]}"
+    notif = {
+        "id": notif_id,
+        "type": payload.get("type") or "info",
+        "title": (payload.get("title") or "").strip(),
+        "message": (payload.get("message") or "").strip(),
+        "read": False,
+        "created_at": datetime.now().isoformat(),
+    }
+    notifications.insert(0, notif)
+    db["notifications"] = notifications
+    save_db(db)
+    return JSONResponse(status_code=201, content={"success": True, "data": notif})
+
+@app.put("/api/admin/notifications/{notif_id}/read")
+def mark_notification_read(notif_id: str):
+    db = load_db()
+    notifications = db.get("notifications", [])
+    for n in notifications:
+        if n.get("id") == notif_id:
+            n["read"] = True
+            break
+    db["notifications"] = notifications
+    save_db(db)
+    return {"success": True, "message": f"Notification {notif_id} marked as read."}
+
+@app.put("/api/admin/notifications/mark-all-read")
+def mark_all_notifications_read():
+    db = load_db()
+    notifications = db.get("notifications", [])
+    for n in notifications:
+        n["read"] = True
+    db["notifications"] = notifications
+    save_db(db)
+    return {"success": True, "message": "All notifications marked as read."}
+
+@app.delete("/api/admin/notifications/{notif_id}")
+def delete_notification(notif_id: str):
+    db = load_db()
+    notifications = db.get("notifications", [])
+    db["notifications"] = [n for n in notifications if n.get("id") != notif_id]
+    save_db(db)
+    return {"success": True, "message": f"Notification {notif_id} deleted."}
+
+@app.delete("/api/admin/notifications")
+def clear_all_notifications():
+    db = load_db()
+    db["notifications"] = []
+    save_db(db)
+    return {"success": True, "message": "All notifications cleared."}
+
+
+# ==============================================================================
+# ADMIN PROFILE ENDPOINTS
+# ==============================================================================
+
+@app.get("/api/admin/profile")
+def get_admin_profile():
+    db = load_db()
+    admin_creds = db.get("admin_credentials", DEFAULT_ADMIN)
+    profile = db.get("admin_profile", {})
+    return {
+        "success": True,
+        "data": {
+            "username": admin_creds.get("username") or "Admin",
+            "email": admin_creds.get("email") or "admin@skyworldwide.com",
+            "role": "superadmin",
+            "full_name": profile.get("full_name") or admin_creds.get("username") or "Admin",
+            "phone": profile.get("phone") or "",
+            "bio": profile.get("bio") or "Sky Worldwide Operations Administrator",
+            "avatar": profile.get("avatar") or "",
+            "location": profile.get("location") or "Mumbai, India",
+            "joined_date": profile.get("joined_date") or "2024-01-01",
+            "last_login": profile.get("last_login") or datetime.now().isoformat(),
+            "timezone": profile.get("timezone") or "Asia/Kolkata",
+            "language": profile.get("language") or "en",
+            "notifications_email": profile.get("notifications_email", True),
+            "notifications_sms": profile.get("notifications_sms", False),
+        }
+    }
+
+@app.put("/api/admin/profile")
+def update_admin_profile(payload: Dict[str, Any] = Body(...)):
+    db = load_db()
+    profile = db.get("admin_profile", {})
+    for field in ["full_name", "phone", "bio", "avatar", "location", "timezone", "language", "notifications_email", "notifications_sms"]:
+        if field in payload:
+            profile[field] = payload[field]
+    profile["updated_at"] = datetime.now().isoformat()
+    db["admin_profile"] = profile
+    save_db(db)
+    return {"success": True, "message": "Profile updated.", "data": profile}
+
+
+# ==============================================================================
+# ADMIN ANALYTICS ENDPOINT
+# ==============================================================================
+
+@app.get("/api/admin/analytics")
+def get_analytics(range: Optional[str] = "30days"):
+    db = load_db()
+    shipments = list(db.get("tracking", {}).values())
+    quotes = db.get("quotes", [])
+    contacts = db.get("contacts", [])
+    customers = db.get("customers", [])
+
+    total = len(shipments)
+    delivered = sum(1 for s in shipments if "deliver" in (s.get("status") or "").lower())
+    in_transit = sum(1 for s in shipments if any(k in (s.get("status") or "").lower() for k in ["transit", "flight", "hub"]))
+    pending = sum(1 for s in shipments if (s.get("status") or "").lower() in ["booked", "waiting"])
+    cancelled = sum(1 for s in shipments if "cancel" in (s.get("status") or "").lower())
+
+    courier_counts: Dict[str, int] = {}
+    for s in shipments:
+        c = (s.get("partner_courier") or "Unknown").strip()
+        courier_counts[c] = courier_counts.get(c, 0) + 1
+    top_couriers = [{"courier": k, "count": v} for k, v in sorted(courier_counts.items(), key=lambda x: -x[1])][:6]
+
+    dest_counts: Dict[str, int] = {}
+    for s in shipments:
+        d = (s.get("destination") or "Unknown").strip()
+        dest_counts[d] = dest_counts.get(d, 0) + 1
+    top_countries = [{"country": k, "count": v} for k, v in sorted(dest_counts.items(), key=lambda x: -x[1])][:8]
+
+    # Build monthly stats (last 6 months)
+    from collections import Counter
+    monthly_counts: Counter = Counter()
+    for s in shipments:
+        ts = s.get("created_at") or s.get("last_updated") or ""
+        if ts and len(ts) >= 7:
+            month_key = ts[:7]
+            monthly_counts[month_key] += 1
+    sorted_months = sorted(monthly_counts.items())[-6:]
+    monthly_stats = [{"month": m, "shipments": c, "revenue": c * 85} for m, c in sorted_months]
+
+    # Daily stats (last 14 days)
+    from datetime import date, timedelta
+    daily_counts: Counter = Counter()
+    for s in shipments:
+        ts = s.get("created_at") or s.get("last_updated") or ""
+        if ts and len(ts) >= 10:
+            daily_counts[ts[:10]] += 1
+    today = date.today()
+    daily_stats = []
+    for i in range(13, -1, -1):
+        day = (today - timedelta(days=i)).isoformat()
+        daily_stats.append({"date": day, "shipments": daily_counts.get(day, 0)})
+
+    return {
+        "success": True,
+        "data": {
+            "total_shipments": total,
+            "delivered": delivered,
+            "in_transit": in_transit,
+            "pending": pending,
+            "cancelled": cancelled,
+            "total_revenue": total * 85,
+            "total_customers": len(customers),
+            "total_quotes": len(quotes),
+            "total_messages": len(contacts),
+            "top_couriers": top_couriers,
+            "top_countries": top_countries,
+            "monthly_stats": monthly_stats,
+            "daily_stats": daily_stats,
+            "delivery_rate": round((delivered / total * 100), 1) if total > 0 else 0,
+        }
+    }
+
+
 # Explicit Root & Admin Routes
+
 @app.get("/")
 def serve_root():
     if DEVELOPMENT_MODE:
@@ -2681,4 +3175,6 @@ def serve_admin():
 app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="static")
 
 if __name__ == "__main__":
-    uvicorn.run("server:app", host="127.0.0.1", port=8000, reload=True)
+    _host = os.getenv("BACKEND_HOST", "127.0.0.1")
+    _port = int(os.getenv("BACKEND_PORT", "8000"))
+    uvicorn.run("server:app", host=_host, port=_port, reload=True)

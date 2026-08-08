@@ -1,7 +1,7 @@
 import axios from "axios";
 import { ShipmentDetailsData, TrackingApiResponse, getErrorMessage } from "@/types";
 
-const API_BASE = process.env.NEXT_PUBLIC_API_BASE || "http://127.0.0.1:8000";
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 const apiClient = axios.create({
   baseURL: API_BASE,
@@ -73,7 +73,7 @@ export async function getShipmentTracking(
       }
 
       if (error.code === "ERR_NETWORK") {
-        throw new Error("Network error: Unable to connect to backend server at http://127.0.0.1:8000.");
+        throw new Error("Network error: Unable to connect to backend server.");
       }
     }
 

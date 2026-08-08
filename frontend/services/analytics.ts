@@ -1,3 +1,4 @@
+import apiClient, { extractError } from "@/lib/apiClient";
 import {
   AnalyticsSummary,
   RevenueChartData,
@@ -12,71 +13,62 @@ export type {
   CountryChartData,
 };
 
-import { getShipments } from "./shipment";
-
 /**
- * Calculates analytics overview summary statistics from live shipment records.
+ * Fetches analytics summary from the backend /api/admin/analytics endpoint.
  */
 export async function getAnalyticsSummary(dateRange?: string): Promise<AnalyticsSummary> {
-  const { shipments } = await getShipments({ pageSize: 1000 });
+  try {
+    const res = await apiClient.get<{ success: boolean; data: Record<string, unknown> }>(
+      "/api/admin/analytics",
+      { params: { range: dateRange || "30days", _t: Date.now() } }
+    );
+    const d = res.data?.data || {};
 
-  const total = shipments.length;
-  const delivered = shipments.filter(
-    (s) => s.status_code === "DELIVERED" || (s.status || "").toLowerCase() === "delivered"
-  ).length;
-  const pending = shipments.filter(
-    (s) => s.status_code === "WAITING" || (s.status || "").toLowerCase().includes("booked")
-  ).length;
-  const inTransit = total - delivered - pending;
+    const topCountries = Array.isArray(d.top_countries)
+      ? (d.top_countries as { country: string; count: number }[]).map((c) => ({
+          country: c.country,
+          count: c.count,
+          percentage: Math.round((c.count / Math.max(1, Number(d.total_shipments))) * 100),
+        }))
+      : [];
 
-  const countryCounts: { [key: string]: number } = {};
-  const courierCounts: { [key: string]: number } = {};
+    const topCouriers = Array.isArray(d.top_couriers)
+      ? (d.top_couriers as { courier: string; count: number }[]).map((c) => ({
+          courier: c.courier,
+          count: c.count,
+          percentage: Math.round((c.count / Math.max(1, Number(d.total_shipments))) * 100),
+        }))
+      : [];
 
-  shipments.forEach((s) => {
-    const country = s.destination ? s.destination.split(",").pop()?.trim() || "USA" : "USA";
-    countryCounts[country] = (countryCounts[country] || 0) + 1;
-
-    const courier = s.partner_courier || "FedEx Express";
-    courierCounts[courier] = (courierCounts[courier] || 0) + 1;
-  });
-
-  const topCountries = Object.entries(countryCounts)
-    .map(([country, count]) => ({
-      country,
-      count,
-      percentage: Math.round((count / Math.max(1, total)) * 100),
-    }))
-    .sort((a, b) => b.count - a.count)
-    .slice(0, 5);
-
-  const topCouriers = Object.entries(courierCounts)
-    .map(([courier, count]) => ({
-      courier,
-      count,
-      percentage: Math.round((count / Math.max(1, total)) * 100),
-    }))
-    .sort((a, b) => b.count - a.count);
-
-  return {
-    total_shipments: total || 1284,
-    delivered_shipments: delivered || 942,
-    pending_shipments: pending || 180,
-    in_transit_shipments: inTransit || 162,
-    estimated_revenue: (total || 1284) * 375,
-    top_countries: topCountries.length > 0 ? topCountries : [
-      { country: "United States", count: 520, percentage: 40 },
-      { country: "United Kingdom", count: 310, percentage: 24 },
-      { country: "UAE", count: 240, percentage: 19 },
-      { country: "Australia", count: 120, percentage: 9 },
-      { country: "Canada", count: 94, percentage: 8 },
-    ],
-    top_couriers: topCouriers.length > 0 ? topCouriers : [
-      { courier: "FedEx Express", count: 680, percentage: 53 },
-      { courier: "DHL Express", count: 390, percentage: 30 },
-      { courier: "UPS Logistics", count: 140, percentage: 11 },
-      { courier: "Aramex", count: 74, percentage: 6 },
-    ],
-  };
+    return {
+      total_shipments: Number(d.total_shipments) || 0,
+      delivered_shipments: Number(d.delivered) || 0,
+      pending_shipments: Number(d.pending) || 0,
+      in_transit_shipments: Number(d.in_transit) || 0,
+      estimated_revenue: Number(d.total_revenue) || 0,
+      top_countries: topCountries,
+      top_couriers: topCouriers,
+      monthly_stats: Array.isArray(d.monthly_stats)
+        ? (d.monthly_stats as Array<{ month: string; revenue: number }>)
+        : [],
+      daily_stats: Array.isArray(d.daily_stats)
+        ? (d.daily_stats as Array<{ date: string; shipments: number }>)
+        : [],
+    };
+  } catch (err) {
+    console.warn("[analytics] fetch failed:", extractError(err));
+    return {
+      total_shipments: 0,
+      delivered_shipments: 0,
+      pending_shipments: 0,
+      in_transit_shipments: 0,
+      estimated_revenue: 0,
+      top_countries: [],
+      top_couriers: [],
+      monthly_stats: [],
+      daily_stats: [],
+    };
+  }
 }
 
 export const fetchAnalyticsData = getAnalyticsSummary;

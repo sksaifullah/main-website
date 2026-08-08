@@ -6,11 +6,7 @@ import { useRouter } from "next/navigation";
 import axios from "axios";
 import { getErrorMessage } from "@/types";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ||
-  (typeof window !== "undefined" && window.location.origin.includes("localhost")
-    ? "http://localhost:8000"
-    : "");
+const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
 
 export default function AdminLoginPage() {
   const router = useRouter();

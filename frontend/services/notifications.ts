@@ -1,3 +1,4 @@
+﻿import apiClient, { extractError } from "@/lib/apiClient";
 import {
   NotificationItem,
   NotificationCategory,
@@ -6,118 +7,89 @@ import {
 
 export type { NotificationItem, NotificationCategory, NotificationFilterParams };
 
-const NOTIFICATIONS_STORAGE_KEY = "sky_worldwide_notifications_db";
-
-const DEFAULT_NOTIFICATIONS: NotificationItem[] = [
-  {
-    id: "notif-1",
-    category: "shipment",
-    title: "New Shipment Created",
-    message: "Tracking #SW9821034 created for Raj Enterprises to NYC, USA.",
-    link: "/dashboard",
-    is_read: false,
-    timestamp: "10 mins ago",
-  },
-  {
-    id: "notif-2",
-    category: "system",
-    title: "FedEx API Token Refreshed",
-    message: "OAuth2 bearer token renewed for FedEx Production Environment.",
-    is_read: false,
-    timestamp: "1 hour ago",
-  },
-  {
-    id: "notif-3",
-    category: "inquiry",
-    title: "Quote Request Received",
-    message: "New quote request from Sunil Kapoor for Pharma Freight to Dubai.",
-    link: "/dashboard/messages",
-    is_read: true,
-    timestamp: "3 hours ago",
-  },
-  {
-    id: "notif-4",
-    category: "customer",
-    title: "New Customer Registered",
-    message: "Desai Pharma Export onboarded with active status.",
-    link: "/dashboard/customers",
-    is_read: true,
-    timestamp: "Yesterday",
-  },
-];
-
-function getLocalNotifications(): NotificationItem[] {
-  if (typeof window === "undefined") return DEFAULT_NOTIFICATIONS;
-  try {
-    const raw = localStorage.getItem(NOTIFICATIONS_STORAGE_KEY);
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      if (Array.isArray(parsed) && parsed.length > 0) {
-        return parsed;
-      }
-    }
-  } catch (e) {
-    console.warn("Could not read local notifications:", e);
-  }
-  return DEFAULT_NOTIFICATIONS;
-}
-
-function saveLocalNotifications(list: NotificationItem[]): void {
-  if (typeof window === "undefined") return;
-  try {
-    localStorage.setItem(NOTIFICATIONS_STORAGE_KEY, JSON.stringify(list));
-  } catch (e) {
-    console.warn("Could not save local notifications:", e);
-  }
+/** Maps backend notification (uses `read`) to frontend NotificationItem (uses `is_read`). */
+function mapNotification(n: Record<string, unknown>): NotificationItem {
+  return {
+    id: String(n.id || ""),
+    category: (n.type as NotificationCategory) || "system",
+    title: String(n.title || ""),
+    message: String(n.message || ""),
+    link: n.link ? String(n.link) : undefined,
+    is_read: Boolean(n.read),
+    timestamp: n.created_at
+      ? new Date(String(n.created_at)).toLocaleString()
+      : "Just now",
+  };
 }
 
 /**
- * Fetches all notifications.
+ * Fetches all notifications from the backend.
  */
 export async function getNotifications(): Promise<NotificationItem[]> {
-  return getLocalNotifications();
+  try {
+    const res = await apiClient.get<{
+      success: boolean;
+      data: Record<string, unknown>[];
+    }>("/api/admin/notifications", { params: { _t: Date.now() } });
+    return (res.data?.data || []).map(mapNotification);
+  } catch (err) {
+    console.warn("[notifications] fetch failed:", extractError(err));
+    return [];
+  }
 }
+
 export const fetchNotificationsList = getNotifications;
 
 /**
- * Marks a notification as read.
+ * Marks a single notification as read.
  */
 export async function markNotificationAsRead(id: string): Promise<boolean> {
-  const current = getLocalNotifications();
-  const idx = current.findIndex((n) => n.id === id);
-  if (idx !== -1) {
-    current[idx].is_read = true;
-    saveLocalNotifications(current);
+  try {
+    await apiClient.put(`/api/admin/notifications/${id}/read`);
     return true;
+  } catch (err) {
+    console.warn("[notifications] markRead failed:", extractError(err));
+    return false;
   }
-  return false;
 }
 
 /**
  * Marks all notifications as read.
  */
 export async function markAllNotificationsAsRead(): Promise<boolean> {
-  const current = getLocalNotifications();
-  const updated = current.map((n) => ({ ...n, is_read: true }));
-  saveLocalNotifications(updated);
-  return true;
+  try {
+    await apiClient.put("/api/admin/notifications/mark-all-read");
+    return true;
+  } catch (err) {
+    console.warn("[notifications] markAllRead failed:", extractError(err));
+    return false;
+  }
 }
 
 /**
- * Clears/Deletes a notification.
+ * Deletes a single notification.
  */
 export async function deleteNotification(id: string): Promise<boolean> {
-  const current = getLocalNotifications();
-  const filtered = current.filter((n) => n.id !== id);
-  saveLocalNotifications(filtered);
-  return true;
+  try {
+    await apiClient.delete(`/api/admin/notifications/${id}`);
+    return true;
+  } catch (err) {
+    console.warn("[notifications] delete failed:", extractError(err));
+    return false;
+  }
 }
+
 export const deleteNotificationItem = deleteNotification;
 
 /**
  * Clears all notifications.
  */
 export async function clearAllNotifications(): Promise<boolean> {
-  saveLocalNotifications([]);
-  return true;
+  try {
+    await apiClient.delete("/api/admin/notifications");
+    return true;
+  } catch (err) {
+    console.warn("[notifications] clearAll failed:", extractError(err));
+    return false;
+  }
 }

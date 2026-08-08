@@ -19,6 +19,7 @@ export interface PricingRecord {
   weight_slabs: WeightSlabRate[];
   is_active: boolean;
   notes?: string;
+  fuel_surcharge_pct?: number;
   updated_at: string;
   flag_url?: string;
 }

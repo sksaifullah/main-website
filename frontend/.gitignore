@@ -2,8 +2,10 @@
 __pycache__/
 *.pyc
 
-# Environment
+# Environment (never commit actual env values)
 .env
+.env.local
+.env.*.local
 
 # Node
 node_modules/
